@@ -24,15 +24,41 @@
     <div class="row">
       <label class="row"><input id="save_note" type="checkbox" checked /> Save as note</label>
       <button id="extract">Extract</button>
+      <button id="extract-llm">Extract LLM</button>
+      <button id="list-notes">List Notes</button>
     </div>
 
     <div class="items" id="items"></div>
+    <div class="notes" id="notes" style="margin-top: 2rem;"></div>
 
     <script>
       const $ = (sel) => document.querySelector(sel);
       const itemsEl = $('#items');
-      const btn = $('#extract');
-      btn.addEventListener('click', async () => {
+      const notesEl = $('#notes');
+      
+      // Helper function to render action items
+      function renderActionItems(items) {
+        if (!items || items.length === 0) {
+          itemsEl.innerHTML = '<p class="muted">No action items found.</p>';
+          return;
+        }
+        itemsEl.innerHTML = items.map(it => (
+          `<div class="item"><input type="checkbox" data-id="${it.id}" ${it.done ? 'checked' : ''} /> <span>${it.text}</span></div>`
+        )).join('');
+        itemsEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.addEventListener('change', async (e) => {
+            const id = e.target.getAttribute('data-id');
+            await fetch(`/action-items/${id}/done`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ done: e.target.checked }),
+            });
+          });
+        });
+      }
+      
+      // Extract button (heuristic-based)
+      $('#extract').addEventListener('click', async () => {
         const text = $('#text').value;
         const save = $('#save_note').checked;
         itemsEl.textContent = 'Extracting...';
@@ -42,28 +68,82 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text, save_note: save }),
           });
-          if (!res.ok) throw new Error('Request failed');
-          const data = await res.json();
-          if (!data.items || data.items.length === 0) {
-            itemsEl.innerHTML = '<p class="muted">No action items found.</p>';
-            return;
+          if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.detail || 'Request failed');
           }
-          itemsEl.innerHTML = data.items.map(it => (
-            `<div class="item"><input type="checkbox" data-id="${it.id}" /> <span>${it.text}</span></div>`
-          )).join('');
-          itemsEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-            cb.addEventListener('change', async (e) => {
-              const id = e.target.getAttribute('data-id');
-              await fetch(`/action-items/${id}/done`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ done: e.target.checked }),
-              });
-            });
-          });
+          const data = await res.json();
+          renderActionItems(data.items);
         } catch (err) {
           console.error(err);
-          itemsEl.textContent = 'Error extracting items';
+          itemsEl.textContent = `Error extracting items: ${err.message}`;
+        }
+      });
+      
+      // Extract LLM button
+      $('#extract-llm').addEventListener('click', async () => {
+        const text = $('#text').value;
+        const save = $('#save_note').checked;
+        itemsEl.textContent = 'Extracting with LLM... (this may take 10-30 seconds)';
+        const startTime = Date.now();
+        try {
+          // Add a timeout indicator
+          const timeoutId = setTimeout(() => {
+            if (itemsEl.textContent.includes('Extracting with LLM')) {
+              itemsEl.textContent = 'Extracting with LLM... (still processing, please wait)';
+            }
+          }, 5000);
+          
+          const res = await fetch('/action-items/extract-llm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, save_note: save }),
+          });
+          clearTimeout(timeoutId);
+          
+          if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.detail || 'Request failed');
+          }
+          const data = await res.json();
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          if (data.items && data.items.length > 0) {
+            renderActionItems(data.items);
+          } else {
+            itemsEl.innerHTML = `<p class="muted">No action items found. (took ${elapsed}s)</p>`;
+          }
+        } catch (err) {
+          console.error(err);
+          itemsEl.textContent = `Error extracting items with LLM: ${err.message}. Make sure Ollama is running and the model is available.`;
+        }
+      });
+      
+      // List Notes button
+      $('#list-notes').addEventListener('click', async () => {
+        notesEl.textContent = 'Loading notes...';
+        try {
+          const res = await fetch('/notes', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (!res.ok) {
+            const error = await res.json();
+            throw new Error(error.detail || 'Request failed');
+          }
+          const notes = await res.json();
+          if (!notes || notes.length === 0) {
+            notesEl.innerHTML = '<p class="muted">No notes found.</p>';
+            return;
+          }
+          notesEl.innerHTML = '<h2>Notes</h2>' + notes.map(note => (
+            `<div style="border: 1px solid #e5e7eb; padding: 1rem; margin: 0.5rem 0; border-radius: 4px;">
+              <div style="font-weight: bold; margin-bottom: 0.5rem;">Note #${note.id} (${note.created_at})</div>
+              <div style="white-space: pre-wrap;">${note.content}</div>
+            </div>`
+          )).join('');
+        } catch (err) {
+          console.error(err);
+          notesEl.textContent = `Error loading notes: ${err.message}`;
         }
       });
 
